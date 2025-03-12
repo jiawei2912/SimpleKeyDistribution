@@ -15,13 +15,19 @@ config:Dict = {}
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-def load_config(file_path) -> Dict:
+def load_config(file_path) -> bool:
     global config
-    with open(file_path, 'r') as file:
-        config = json.load(file)
+    try:
+        with open(file_path, 'r') as file:
+            config = json.load(file)
+            return True
+    except IOError as e:
+        logger.error(f'Error reading config file at {file_path}: {e}')
+        return False
 
 def main():
-    load_config('conf.json')
+    if not load_config('conf.json'): 
+        return
     print(f'Starting Simple Key Distribution {VER_NUM}...')
     logger.info(f'Starting Simple Key Distribution {VER_NUM}...')
     logger.info('Configuration settings:')
@@ -39,6 +45,41 @@ def main():
             return
         update_keys(keys)
 
+# Raises an issue if mandatory keys are missing from the config
+# Sets default values for optional keys if they are not present
+def process_config() -> bool:
+    global config
+    mandatory_keys = ["KEY_SERVER_URL"]
+    default_config = {
+        "_comment": "timer_interval is in seconds",
+        "USE_INTERNAL_TIMER": False,
+        "INTERNAL_TIMER_INTERVAL": 900,
+        "OVERRIDE_EXISTING_KEYS": True,
+        "KEY_SERVER_URL": "",
+        "SSH_PUBLIC_KEY_TYPES": ["ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "ssh-ed25519"]
+    }
+    
+    if not all(key in config for key in mandatory_keys):
+        logger.error(f'Missing mandatory key(s) in config: {mandatory_keys}')
+        return False
+    for key, value in default_config.items():
+        config.setdefault(key, value)
+    for key, value in config.items():
+        if type(value) != type(default_config[key]):
+            logger.error(f'Invalid type for key {key} in config: {type(value)}')
+            return False
+        
+    # Specifically to check the URL (verify formatting)
+    if not config["KEY_SERVER_URL"].startswith('http'):
+        logger.error('Invalid URL format in config: must start with http or https')
+        return False
+    elif not config["KEY_SERVER_URL"].startswith("https"):
+        logger.warning('HTTP is not recommended. Encryption is recommended to protect against man in the middle attacks.')
+
+    return True
+    
+
+# Updates the authorized_keys file with the provided keys
 def update_keys(keys: Set[str]):
     if os.name == 'posix':
         ssh_dir = os.path.expanduser(f'~{getpass.getuser()}/.ssh')
