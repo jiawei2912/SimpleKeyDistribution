@@ -101,7 +101,8 @@ def update_keys(keys: Set[str]):
     msg = err_msg if err_msg else success_msg
 
     if config["ENABLE_WEBHOOK"]: 
-        err = send_webhook_notification(msg)
+        status = "error" if err_msg else "success"
+        err = send_webhook_notification(msg, status)
         if err:
             logger.error(err)
     if err_msg:

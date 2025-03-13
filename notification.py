@@ -4,17 +4,21 @@ import urllib
 
 # Sends a notification to a webhook URL
 # Fails silently
-def send_webhook_notification(message: str) -> str:
+def send_webhook_notification(message: str, status:str="") -> str:
     config = get_config()
     err_msg = ""
     webhook_url = config.get("WEBHOOK_URL")
     if not webhook_url:
         err_msg = "Webhook URL not provided."
 
-    data = json.dumps({
+    payload = {
         "hostname": config["HOST_NAME"],
         "message": message
-        }).encode('utf-8')
+        }
+    if status:
+        payload["status"] = status
+
+    data = json.dumps(payload).encode('utf-8')
     req = urllib.request.Request(webhook_url, data=data, headers={'content-type': 'application/json'})
 
     try:
