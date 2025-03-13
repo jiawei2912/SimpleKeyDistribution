@@ -1,4 +1,4 @@
-from typing import Dict, Set, Union, List
+from typing import Dict, Set, Union, List, Tuple
 
 import json
 import urllib.request
@@ -8,122 +8,106 @@ import zipfile
 import logging
 import getpass
 import time
+import socket
+import stat
+import subprocess
 
-VER_NUM = "1.0.0"
+from config import load_config, get_config
+from notification import send_webhook_notification
+from utils import get_os_dependent_vars
+
+VER_NUM = "1.1.0"
 config:Dict = {}
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-def load_config(file_path) -> bool:
-    global config
-    try:
-        with open(file_path, 'r') as file:
-            config = json.load(file)
-            return True
-    except IOError as e:
-        logger.error(f'Error reading config file at {file_path}: {e}')
-        return False
 
 def main():
-    if not load_config('conf.json'): 
+    global config
+    err_msg = load_config()
+    if err_msg:
+        logger.error(err_msg)
         return
-    print(f'Starting Simple Key Distribution {VER_NUM}...')
+    config = get_config()
+
     logger.info(f'Starting Simple Key Distribution {VER_NUM}...')
     logger.info('Configuration settings:')
     logger.info(json.dumps(config, indent=4))
-    if config["USE_INTERNAL_TIMER"]:
-        while True:
-            update_keys(keys)
-            time.sleep(config["UPDATE_INTERVAL"])
-            keys = get_keys()
-            if keys is None:
-                continue
-    else:
+
+    def run_once():
+        if not check_authorised_keys_permissions():
+            return
         keys:Set[str] = get_keys()
         if keys is None:
             return
         update_keys(keys)
 
-# Raises an issue if mandatory keys are missing from the config
-# Sets default values for optional keys if they are not present
-def process_config() -> bool:
-    global config
-    mandatory_keys = ["KEY_SERVER_URL"]
-    default_config = {
-        "_comment": "timer_interval is in seconds",
-        "USE_INTERNAL_TIMER": False,
-        "INTERNAL_TIMER_INTERVAL": 900,
-        "OVERRIDE_EXISTING_KEYS": True,
-        "KEY_SERVER_URL": "",
-        "SSH_PUBLIC_KEY_TYPES": ["ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "ssh-ed25519"]
-    }
-    
-    if not all(key in config for key in mandatory_keys):
-        logger.error(f'Missing mandatory key(s) in config: {mandatory_keys}')
-        return False
-    for key, value in default_config.items():
-        config.setdefault(key, value)
-    for key, value in config.items():
-        if type(value) != type(default_config[key]):
-            logger.error(f'Invalid type for key {key} in config: {type(value)}')
-            return False
-        
-    # Specifically to check the URL (verify formatting)
-    if not config["KEY_SERVER_URL"].startswith('http'):
-        logger.error('Invalid URL format in config: must start with http or https')
-        return False
-    elif not config["KEY_SERVER_URL"].startswith("https"):
-        logger.warning('HTTP is not recommended. Encryption is recommended to protect against man in the middle attacks.')
-
-    return True
+    if config["USE_INTERNAL_TIMER"]:
+        while True:
+            run_once()
+            time.sleep(config["INTERNAL_TIMER_INTERVAL"])
+    else:
+        run_once()
     
 
 # Updates the authorized_keys file with the provided keys
 def update_keys(keys: Set[str]):
-    if os.name == 'posix':
-        ssh_dir = os.path.expanduser(f'~{getpass.getuser()}/.ssh')
-        authorized_keys_path = os.path.join(ssh_dir, 'authorized_keys')
-    elif os.name == 'nt':
-        ssh_dir = os.path.expanduser(f'~{getpass.getuser()}\\.ssh')
-        authorized_keys_path = os.path.join(ssh_dir, 'authorized_keys')
-    else:
-        logger.error('Unsupported OS')
-        return
+    # This default value shouldn't persist to the final message
+    success_msg:str = ""
+    err_msg:str = ""
 
-    # Ensure the .ssh directory exists
-    try:
-        os.makedirs(ssh_dir, exist_ok=True)
-    except IOError as e:
-        logger.error(f'Error creating {ssh_dir}: {e}')
-        return
+    err_msg, ssh_dir, authorized_keys_path = get_os_dependent_vars()
 
-    try:
-        if config["OVERRIDE_EXISTING_KEYS"]:
-            # Write new keys
-            with open(authorized_keys_path, 'w') as file:
-                for key in keys:
-                    file.write(key + '\n')
-            logger.info(f'Synchronised {authorized_keys_path} with reference keys.')
-            print("Keys Synced")
-        else:
-            # Read existing keys if the file exists
-            if os.path.exists(authorized_keys_path):
-                with open(authorized_keys_path, 'r') as file:
-                    existing_keys = set(file.read().splitlines())
-            else:
-                existing_keys = set()
+    if not err_msg:
+        # Ensure the .ssh directory exists
+        try:
+            os.makedirs(ssh_dir, exist_ok=True)
+        except IOError as e:
+            err_msg = f'Error creating {ssh_dir}: {e}'
+            return
 
-            # Append new keys
-            with open(authorized_keys_path, 'a') as file:
-                for key in keys:
-                    if key not in existing_keys:
+    if not err_msg:
+        try:
+            if config["OVERRIDE_EXISTING_KEYS"]:
+                # Write new keys
+                with open(authorized_keys_path, 'w') as file:
+                    for key in keys:
                         file.write(key + '\n')
-            logger.info(f'Updated {authorized_keys_path} with reference keys.')
-            print("Keys Updated")
+                success_msg = f'Synchronised {authorized_keys_path} with reference keys.'
+            else:
+                # Read existing keys if the file exists
+                if os.path.exists(authorized_keys_path):
+                    with open(authorized_keys_path, 'r') as file:
+                        existing_keys = set(file.read().splitlines())
+                else:
+                    existing_keys = set()
 
-    except IOError as e:
-        logger.error(f'Error writing to {authorized_keys_path}: {e}')
+                # Append new keys
+                with open(authorized_keys_path, 'a') as file:
+                    for key in keys:
+                        if key not in existing_keys:
+                            file.write(key + '\n')
+                success_msg = f'Updated {authorized_keys_path} with reference keys.'
+
+        except IOError as e:
+            msg = f"Error updating authorised keys at {authorized_keys_path}: {e}"
+
+    msg = err_msg if err_msg else success_msg
+
+    if config["ENABLE_WEBHOOK"]: 
+        err = send_webhook_notification(msg)
+        if err:
+            logger.error(err)
+    if err_msg:
+        logger.error(err_msg)
+    else:
+        logger.info(success_msg)
 
 # Downloads and parses SSH public keys from the KEY_SERVER_URL
 # Expects the URL to point to a zip archive of .txt files or a single .txt file
@@ -188,5 +172,49 @@ def extract_ssh_keys_from_file(file) -> Union[Set[str], UnicodeDecodeError]:
         return e
 
     return keys
+
+def check_authorised_keys_permissions() -> bool:
+    err_msg, _, authorized_keys_path = get_os_dependent_vars()
+    if err_msg:
+        logger.error(err_msg)
+        return False
+
+    # Check and set permissions if necessary
+    if os.name == 'posix':
+        current_permissions = stat.S_IMODE(os.lstat(authorized_keys_path).st_mode)
+        expected_permissions = stat.S_IRUSR | stat.S_IWUSR
+        if current_permissions != expected_permissions:
+            try:
+                os.chmod(authorized_keys_path, expected_permissions)
+            except PermissionError:
+                logger.warning(f"Could not set permissions for {authorized_keys_path}. May rquire sudo.")
+                return False
+    elif os.name == 'nt':
+        try:
+            # Check current permissions using icacls
+            result = subprocess.run(['icacls', authorized_keys_path], capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.warning(f"Could not check permissions for {authorized_keys_path}. {result.stderr}")
+                return False
+
+            # Parse the output to check if the current user has full control
+            current_user = getpass.getuser()
+            expected_permission = f"{current_user}:"
+            permissions_correct = False
+            for line in result.stdout.splitlines():
+                if expected_permission in line and "(F)" in line:
+                    permissions_correct = True
+                    break
+
+            if not permissions_correct:
+                # Attempt to set the permissions if they are not as expected
+                result = subprocess.run(['icacls', authorized_keys_path, '/inheritance:r', '/grant:r', f'{current_user}:(F)'], capture_output=True, text=True)
+                if result.returncode != 0:
+                    logger.warning(f"Could not set permissions for {authorized_keys_path}. May rquire elevation. {result.stderr}")
+                    return False
+        except Exception as e:
+            logger.warning(f"Could not set permissions for {authorized_keys_path}. May rquire elevation. {e}")
+            return False
+    return True
 
 main()

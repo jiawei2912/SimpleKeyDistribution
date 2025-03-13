@@ -1,8 +1,0 @@
-{
-    "_comment": "timer_interval is in seconds",
-    "USE_INTERNAL_TIMER": false,
-    "INTERNAL_TIMER_INTERVAL": 900,
-    "OVERRIDE_EXISTING_KEYS": true,
-    "KEY_SERVER_URL": "",
-    "SSH_PUBLIC_KEY_TYPES": ["ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "ssh-ed25519"]
-}
