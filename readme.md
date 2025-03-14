@@ -1,6 +1,6 @@
 # Simple SSH Key Distribution
 - Author: jiawei2912
-- Updated: 2025-03-12
+- Updated: 2025-03-14
 
 ## Overview
 
@@ -43,9 +43,68 @@ cp conf.template.json conf.json
 nano conf.json
 ```
 Refer to the configuration section above for explanations of each setting.
-### Commentary: Scheduling
+### Running The Script
+```
+python3 main.py
+```
+## About Scheduling
 If USE_INTERNAL_TIMER is enabled, the script will periodically updating the keys on its own. However, it would be more reliable to rely on the OS to control the script and to achieve this.
+
+On Windows, consider using Task Scheduler.
 
 On Ubuntu/Debian, consider setting up a systemctl service and a timer.
 
-On Windows, consider using Task Scheduler.
+### Example Systemctl Service and Timer Creation
+#### Create the Systemctl Service
+```
+nano /etc/systemd/system/skd.service
+```
+#### Paste the Following Content
+Replace YOUR_USERNAME with your username.
+```
+[Unit]
+Description=Simple Key Distribution
+After=network.target
+
+[Service]
+Type=oneshot
+User=YOUR_USERNAME
+ExecStart=/usr/bin/python3 /home/YOUR_USERNAME/SimpleKeyDistribution/main.py
+WorkingDirectory=/home/YOUR_USERNAME/SimpleKeyDistribution
+
+[Install]
+WantedBy=multi-user.target
+```
+#### Create the Systemctl Timer
+```
+nano /etc/systemd/system/skd.timer
+```
+#### Paste the Following Content
+```
+[Unit]
+Description=Run Simple Key Distribution every 15 minutes
+Requires=skd.service
+
+[Timer]
+Unit=skd.service
+OnBootSec=1min
+OnUnitActiveSec=15min
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+```
+#### Reload Systemctl
+```
+systemctl daemon-reload
+```
+#### Enable and Run the Service
+```
+systemctl enable skd.timer
+systemctl start skd.timer
+```
+#### To Check If the Service Is Running
+```
+systemctl status skd.timer
+systemctl list-timers skd.timer
+```
